@@ -4,6 +4,9 @@ Serves the site and stores everything you mark in data/db.json (one JSON file; t
 version is kept as data/db.json.bak). Run:  python3 server.py   then open http://127.0.0.1:8765
 Uses only the Python standard library.
 
+API: GET /api/db/<collection>[/<id>], PUT (replace a document), PATCH (JSON Merge Patch, RFC 7396:
+objects merge, null deletes a key; creates the document if missing), DELETE.
+
 Environment: PORT (default 8765), TRACKER_DB (path to the data file, for testing).
 """
 
@@ -24,7 +27,7 @@ DB_FILE = Path(os.environ["TRACKER_DB"]).resolve() if os.environ.get("TRACKER_DB
 BACKUP_FILE = DB_FILE.with_name(DB_FILE.name + ".bak")
 COLLECTIONS = {"logs", "problems", "apps", "weeks", "mocks", "meta"}
 ID_RE = re.compile(r"^[A-Za-z0-9_.~:@+-]{1,200}$")
-STATIC_FILE = re.compile(r"^/(data-[a-z0-9-]+\.js)$")  # the only files besides the page we serve
+STATIC_FILE = re.compile(r"^/(data-[a-z0-9-]+\.js|app\.js|logic\.js|styles\.css)$")  # the only files besides the page we serve
 MAX_BODY = 1_000_000  # bytes per document
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
@@ -68,6 +71,19 @@ def save(data: dict) -> None:
         except OSError:
             pass
         raise
+
+
+def merge_patch(target, patch):
+    """JSON Merge Patch (RFC 7396): objects merge recursively, null deletes a key, anything else replaces."""
+    if not isinstance(patch, dict):
+        return patch
+    out = dict(target) if isinstance(target, dict) else {}
+    for key, value in patch.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = merge_patch(out.get(key), value)
+    return out
 
 
 PAGE_HEAD = (
@@ -158,32 +174,53 @@ class Handler(SimpleHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
-    def do_PUT(self):
-        if not self._guard(mutating=True):
-            return
-        r = self._route()
-        if isinstance(r, str) or r[1] is None:
-            return self._json(404, {"detail": r if isinstance(r, str) else "use /api/db/<collection>/<id>"})
+    def _body(self):
+        """Parse the JSON object request body, or send an error and return None."""
         try:
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
-            return self._json(411, {"detail": "Content-Length required"})
+            self._json(411, {"detail": "Content-Length required"})
+            return None
         if not 0 < length <= MAX_BODY:
-            return self._json(413, {"detail": f"body must be 1..{MAX_BODY} bytes"})
+            self._json(413, {"detail": f"body must be 1..{MAX_BODY} bytes"})
+            return None
         try:
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("body must be a JSON object")
         except ValueError as exc:
-            return self._json(400, {"detail": str(exc)})
+            self._json(400, {"detail": str(exc)})
+            return None
+        return body
+
+    def _write(self, apply):
+        """Shared PUT/PATCH: apply(old_doc_or_None, body) -> new doc, under the lock."""
+        if not self._guard(mutating=True):
+            return
+        r = self._route()
+        if isinstance(r, str) or r[1] is None:
+            return self._json(404, {"detail": r if isinstance(r, str) else "use /api/db/<collection>/<id>"})
+        body = self._body()
+        if body is None:
+            return
         try:
             with _lock:
                 data = load()
-                data[r[0]][r[1]] = body
+                doc = apply(data[r[0]].get(r[1]), body)
+                if len(json.dumps(doc)) > MAX_BODY:
+                    return self._json(413, {"detail": f"document would exceed {MAX_BODY} bytes"})
+                data[r[0]][r[1]] = doc
                 save(data)
         except DbError as exc:
             return self._json(500, {"detail": str(exc)})
-        return self._json(200, {"ok": True})
+        return self._json(200, {"ok": True, "doc": doc})
+
+    def do_PUT(self):
+        self._write(lambda old, body: body)
+
+    def do_PATCH(self):
+        """Merge-patch one document (created if missing), so concurrent tabs don't overwrite each other."""
+        self._write(merge_patch)
 
     def do_DELETE(self):
         if not self._guard(mutating=True):
@@ -199,6 +236,7 @@ class Handler(SimpleHTTPRequestHandler):
         except DbError as exc:
             return self._json(500, {"detail": str(exc)})
         self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
 

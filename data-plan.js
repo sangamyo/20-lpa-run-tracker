@@ -103,7 +103,7 @@ window.PLAN = {
       project: "None",
       job: "25 applications + follow-ups on the whole pipeline. 4 mocks (2 DSA, 1 SD, 1 HR)",
       done: ["20 timed problems with at least 70% solved", "4 mocks done", "Negotiation script rehearsed out loud", "25 apps sent"] },
-    { w: 12, from: "2026-12-21", to: "2026-12-27", title: "Interview, close, negotiate",
+    { w: 12, from: "2026-12-21", to: "2026-12-31", title: "Interview, close, negotiate",
       ai: "Revise AI/LLM Q&A and your two AI designs.",
       topics: "10 company-tagged problems + full revision pass of all stars",
       set: [],
