@@ -135,6 +135,83 @@
     return m;
   }
 
+  // ---------- pace ----------
+  // How far into week wn the date t is: elapsed days (today counts), out of the week's length.
+  function weekSpan(wn, t) {
+    const w = weekObj(wn), days = diffDays(w.from, w.to) + 1;
+    const elapsed = t < w.from ? 0 : t > w.to ? days : diffDays(w.from, t) + 1;
+    return { w, days, elapsed, frac: elapsed / days };
+  }
+  // What "on pace" needs by now for one target: at least 1, else the target scaled by the elapsed share of the week.
+  const paceNeed = (target, frac) => Math.max(1, Math.ceil(target * frac - 1e-9));
+  // Mean over targets (> 0) of min(actual / need, 1), as a percentage. frac = 1 gives the full-week score.
+  function paceScore(rows, frac) {
+    const sc = (rows || []).filter((r) => r[2] > 0);
+    if (!sc.length) return 0;
+    return Math.round((100 * sc.reduce((s, r) => s + Math.min(r[1] / paceNeed(r[2], frac), 1), 0)) / sc.length);
+  }
+  const paceTone = (p) => (p >= 90 ? "good" : p >= 60 ? "warn" : "bad");
+  // Bar colour: green = target hit, amber = on pace for the elapsed share, red = behind.
+  function barTone(a, target, frac) {
+    if (!(target > 0)) return "";
+    if (a >= target) return "good";
+    return frac < 1 && a >= paceNeed(target, frac) ? "warn" : "bad";
+  }
+  // Week wn as seen on day t: pace score, full-week score, one dot per day (filled when the day had any activity).
+  function weekPace(S, wn, t, ix) {
+    ix = ix || dayIndex(S);
+    const sp = weekSpan(wn, t), m = metrics(S, wn), dots = [];
+    let activeDays = 0;
+    for (let i = 0; i < sp.days; i++) {
+      const d = addDays(sp.w.from, i), future = d > t, active = !future && dayStats(S, d, ix).v.all > 0;
+      if (active) activeDays++;
+      dots.push({ d, active, future, today: d === t });
+    }
+    const pace = paceScore(m.rows, sp.frac);
+    return { pace, full: m.score, tone: paceTone(pace), frac: sp.frac, elapsed: sp.elapsed, days: sp.days, dots, activeDays,
+      fresh: sp.elapsed === 1 && activeDays === 0, current: sp.elapsed > 0 && t <= sp.w.to, m };
+  }
+
+  // ---------- today's tasks ----------
+  // lessons: the lesson list sorted by order. The first unfinished lesson of this week or earlier, else any unfinished one.
+  function nextLesson(S, lessons, t) {
+    const done = ((S.meta.learn || {}).done) || {}, cw = clampW(weekNo(t));
+    return lessons.find((l) => !done[l.id] && l.week <= cw) || lessons.find((l) => !done[l.id]) || null;
+  }
+  // "What do I do now": up to 5 rows derived from existing data. A row turns done (instead of vanishing) once
+  // today's marks clear it. kinds: lesson, problem, revisits, followups, log.
+  function todayTasks(S, t, lessons, hour) {
+    const { P, NUMS } = problemsIndex(), out = [], ldone = ((S.meta.learn || {}).done) || {};
+    const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+    const lToday = lessons.filter((l) => ldone[l.id] === t), nl = nextLesson(S, lessons, t);
+    if (lToday.length) out.push({ kind: "lesson", done: true, id: lToday[0].id, label: "Lesson done: " + lToday[0].title + (lToday.length > 1 ? ` (+${lToday.length - 1} more)` : "") });
+    else if (nl) out.push({ kind: "lesson", done: false, id: nl.id, label: "Read: " + nl.title, sub: `${nl.minutes} min · ${nl.track}` });
+    const solved = NUMS.filter((n) => ps(S, n).solvedOn === t), q = backlog(S, t).queue;
+    if (solved.length) out.push({ kind: "problem", done: true, n: solved[0], label: `Solved #${solved[0]} ${P[solved[0]].name}` + (solved.length > 1 ? ` (+${solved.length - 1} more)` : "") });
+    else if (q.length) { const p = P[q[0]]; out.push({ kind: "problem", done: false, n: q[0], url: p.url, label: `Solve #${q[0]} ${p.name}`, sub: `${p.diff === "E" ? "Easy" : p.diff === "M" ? "Medium" : "Hard"} · ${p.pattern}` }); }
+    const due = dueList(S, t), revToday = NUMS.filter((n) => ps(S, n).r3On === t || ps(S, n).r10On === t).length;
+    if (due.length) { const late = due.filter((x) => x.late > 0).length; out.push({ kind: "revisits", done: false, count: due.length, label: "Clear " + plural(due.length, "revisit"), sub: late ? `${late} overdue` : "Due today" }); }
+    else if (revToday) out.push({ kind: "revisits", done: true, label: "Revisits cleared · " + revToday + " today" });
+    const fu = overdueApps(S, t);
+    if (fu.length) out.push({ kind: "followups", done: false, count: fu.length, label: plural(fu.length, "follow-up") + " due", sub: fu.slice(0, 3).map(([, a]) => a.company).join(", ") + (fu.length > 3 ? ` +${fu.length - 3}` : "") });
+    else if (Object.values(S.apps).some((a) => isActive(a) && !isWish(a) && a.lastAction === t && a.created !== t)) out.push({ kind: "followups", done: true, label: "Follow-ups handled" });
+    const logged = !!S.logs[t];
+    out.push({ kind: "log", done: logged, emph: !logged && hour >= 20, label: logged ? "Tracker logged" : "Log tonight's tracker", sub: logged ? "" : "2 minutes · then copy it to Claude" });
+    return out.slice(0, 5);
+  }
+
+  // Quiz answers are stored as { [questionIndex]: optionIndex }. Only valid option numbers count.
+  function quizScore(quiz, answers) {
+    const qs = Array.isArray(quiz) ? quiz : [], a = isObj(answers) ? answers : {};
+    let answered = 0, correct = 0;
+    qs.forEach((q, i) => {
+      const x = a[i];
+      if (!Number.isInteger(x) || x < 0 || x >= (q.options || []).length) return;
+      answered++; if (x === q.answer) correct++;
+    });
+    return { answered, correct, total: qs.length, complete: qs.length > 0 && answered === qs.length };
+  }
+
   // ---------- day activity (heatmap) ----------
   // One pass over the data builds per-date counts; dayStats() is then O(1) per day.
   function dayIndex(S) {
@@ -336,7 +413,7 @@
       (DATE_FIELDS[c] || []).forEach((f) => { if (f in d && !isDate(d[f])) { if (d[f] !== "" || c === "problems") delete d[f]; } });
       const fixMap = (m) => { if (!isObj(m)) return {}; const r = {}; Object.keys(m).forEach((k) => { const v = m[k]; if (v) r[k] = isDate(v) ? v : true; }); return r; };
       if (c === "weeks") { if ("checks" in d) d.checks = fixMap(d.checks); if ("review" in d && !isObj(d.review)) delete d.review; }
-      if (c === "meta") { if ("done" in d) d.done = fixMap(d.done); if ("known" in d) d.known = fixMap(d.known); }
+      if (c === "meta") { if ("done" in d) d.done = fixMap(d.done); if ("known" in d) d.known = fixMap(d.known); if ("quiz" in d && !isObj(d.quiz)) delete d.quiz; }
       if (c === "logs" && "top3" in d && !Array.isArray(d.top3)) delete d.top3;
       if (c === "mocks" && "scores" in d && !Array.isArray(d.scores)) delete d.scores;
       if (c === "apps" && typeof d.status !== "string") d.status = "Wishlist";
@@ -369,7 +446,7 @@
     problemsIndex, ps, r3Due, r10Due, revDue, dueList, backlog,
     STATUSES, CLOSED, isActive, isWish, isSent, overdueApps, toApply, appStatusPatch, appliedForSave, safeUrl,
     MOCK_SHORT, mockScores, mockAvg, mockPass, mockSummary,
-    metrics, dayIndex, dayStats, HM, hmLevel, isActiveDay, heatmapModel, flags, asOf, report, weeklyReport,
+    metrics, weekSpan, paceNeed, paceScore, paceTone, barTone, weekPace, nextLesson, todayTasks, quizScore, dayIndex, dayStats, HM, hmLevel, isActiveDay, heatmapModel, flags, asOf, report, weeklyReport,
     isObj, clone, mergePatch, inversePatch, stripNulls, normalise, stableJson, checkPlan, clampNum
   };
 })(typeof window !== "undefined" ? window : globalThis);

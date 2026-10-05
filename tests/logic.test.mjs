@@ -182,3 +182,74 @@ test("merge patch, inverse patch and normalisation", () => {
   assert.equal(L.safeUrl("https://x.com/jobs?id=1"), "https://x.com/jobs?id=1");
   assert.equal(L.safeUrl("www.x.com"), "");
 });
+
+test("pace: need scales with the elapsed share of the week, never below 1", () => {
+  const sp = L.weekSpan(3, "2026-10-21"); // week 3 = Mon 19 – Sun 25 Oct; Wed is day 3 of 7
+  assert.equal(sp.elapsed, 3); assert.equal(sp.days, 7);
+  assert.equal(L.paceNeed(12, 3 / 7), 6); // ceil(5.14)
+  assert.equal(L.paceNeed(1, 1 / 7), 1);
+  assert.equal(L.paceNeed(14, 2 / 14), 2); // no float creep to 3
+  assert.equal(L.paceNeed(20, 1), 20);
+  assert.equal(L.weekSpan(3, "2026-10-30").elapsed, 7); // past week counts in full
+  assert.equal(L.weekSpan(3, "2026-10-12").elapsed, 0);
+  assert.equal(L.weekSpan(12, "2026-12-31").days, 11);
+  // (5/6 + 1/9 + 2/7 + 1/3 + 0/1) / 5 = 31%; zero targets (mocks) are ignored
+  const rows = [["Problems", 5, 12], ["Applications", 1, 20], ["Referral asks", 2, 15], ["Cold DMs", 1, 5], ["Contests", 0, 1], ["Mocks", 3, 0]];
+  assert.equal(L.paceScore(rows, 3 / 7), 31);
+  assert.equal(L.paceScore(rows.map((r) => [r[0], r[2], r[2]]), 3 / 7), 100);
+  assert.equal(L.paceScore([["x", 9, 0]], 0.5), 0);
+  // full week (frac 1) equals the plain week score
+  assert.equal(L.paceScore(rows, 1), Math.round(100 * (5 / 12 + 1 / 20 + 2 / 15 + 1 / 5 + 0) / 5));
+  assert.equal(L.paceTone(90), "good"); assert.equal(L.paceTone(60), "warn"); assert.equal(L.paceTone(59), "bad");
+  assert.equal(L.barTone(12, 12, 3 / 7), "good");
+  assert.equal(L.barTone(6, 12, 3 / 7), "warn");
+  assert.equal(L.barTone(5, 12, 3 / 7), "bad");
+  assert.equal(L.barTone(11, 12, 1), "bad"); // past week: amber is impossible
+  assert.equal(L.barTone(0, 0, 0.5), "");
+});
+
+test("weekPace: dots, fresh first day and pace vs full-week score", () => {
+  const S = empty();
+  let wp = L.weekPace(S, 1, "2026-10-05");
+  assert.equal(wp.fresh, true); assert.equal(wp.dots.length, 7);
+  assert.ok(wp.dots[0].today && !wp.dots[0].active && wp.dots[1].future);
+  S.problems["1"] = { solvedOn: "2026-10-05" };
+  S.problems["2"] = { solvedOn: "2026-10-05" };
+  wp = L.weekPace(S, 1, "2026-10-05");
+  assert.equal(wp.fresh, false); assert.ok(wp.dots[0].active);
+  // week 1 targets: prob 10, apps 10, refs 10 → day 1 needs 2 each: (2/2 + 0 + 0) / 3
+  assert.equal(wp.pace, 33);
+  assert.equal(wp.full, Math.round(100 * (2 / 10) / 3));
+  // the same data seen after the week ended is scored on full targets
+  assert.equal(L.weekPace(S, 1, "2026-10-20").pace, wp.full);
+});
+
+test("todayTasks: next lesson → backlog problem → revisits → follow-ups → tracker; rows turn done", () => {
+  const lessons = [{ id: "a", title: "A", week: 1, minutes: 10, track: "Start", order: 0 }, { id: "b", title: "B", week: 1, minutes: 20, track: "Python", order: 1 }];
+  const S = empty(); const t = "2026-10-08";
+  let ts = plain(L.todayTasks(S, t, lessons, 9));
+  assert.deepEqual(ts.map((x) => x.kind), ["lesson", "problem", "log"]);
+  assert.equal(ts[0].id, "a"); assert.equal(ts[1].n, 1); assert.equal(ts[2].emph, false);
+  assert.equal(L.todayTasks(S, t, lessons, 21)[2].emph, true);
+  S.meta.learn = { done: { a: t } };
+  S.problems["1"] = { solvedOn: "2026-10-05" }; // R3 due on 8 Oct
+  S.problems["2"] = { solvedOn: t };
+  S.apps.x = { company: "Acme", status: "Applied", applied: "2026-10-01", nextDate: "2026-10-07" };
+  S.logs[t] = { hours: 2 };
+  ts = plain(L.todayTasks(S, t, lessons, 21));
+  assert.deepEqual(ts.map((x) => [x.kind, x.done]), [["lesson", true], ["problem", true], ["revisits", false], ["followups", false], ["log", true]]);
+  assert.equal(ts[2].count, 1); assert.match(ts[3].label, /1 follow-up due/); assert.match(ts[3].sub, /Acme/);
+  S.problems["1"].r3On = t; S.apps.x = { ...S.apps.x, nextDate: "2026-10-15", lastAction: t };
+  ts = plain(L.todayTasks(S, t, lessons, 21));
+  assert.deepEqual(ts.map((x) => [x.kind, x.done]), [["lesson", true], ["problem", true], ["revisits", true], ["followups", true], ["log", true]]);
+  assert.equal(L.nextLesson(S, lessons, t).id, "b");
+});
+
+test("quizScore counts only valid answers", () => {
+  const quiz = [{ options: ["x", "y"], answer: 1 }, { options: ["x", "y", "z"], answer: 0 }, { options: ["x", "y"], answer: 0 }];
+  assert.deepEqual(plain(L.quizScore(quiz, { 0: 1, 1: 2 })), { answered: 2, correct: 1, total: 3, complete: false });
+  assert.deepEqual(plain(L.quizScore(quiz, { 0: 1, 1: 0, 2: 0 })), { answered: 3, correct: 3, total: 3, complete: true });
+  assert.equal(L.quizScore(quiz, { 0: 7, 1: "0" }).answered, 0);
+  assert.equal(L.quizScore(null, null).total, 0);
+  assert.deepEqual(plain(L.normalise("meta", { learn: { quiz: "bad", done: {} } })).learn, { done: {} });
+});
