@@ -1,0 +1,50 @@
+// AI / LLM interview Q&A and AI system design prompts. Load after data-cs.js (which assigns window.SD).
+window.CS = window.CS || {};
+window.CS.ai = { label: "AI / LLM", qa: [
+  ["What is a token?", "A subword unit produced by the tokenizer (usually BPE). Roughly 4 characters or 0.75 English words; pricing, latency, rate limits and context windows are all counted in tokens."],
+  ["How does an LLM generate text?", "It predicts a probability distribution over the vocabulary for the next token, samples one, appends it and repeats. That autoregressive loop is why output is generated token by token."],
+  ["What does temperature do?", "It divides logits before softmax. Low temperature sharpens the distribution (more repeatable, good for extraction/JSON); high temperature flattens it (more varied, more errors)."],
+  ["Top-p vs top-k sampling?", "Top-k samples from the k most likely tokens. Top-p (nucleus) samples from the smallest set whose cumulative probability reaches p, so the set size adapts to the model's confidence."],
+  ["Is temperature 0 fully deterministic?", "Not guaranteed. It is near-greedy, but provider-side batching and floating point non-determinism can still change outputs slightly."],
+  ["What is a context window?", "The maximum tokens per call, shared by input (system, history, retrieved docs) and output. Larger contexts cost more, are slower, and suffer the lost-in-the-middle effect."],
+  ["What is attention, at a high level?", "Each token creates query, key and value vectors; its output is a weighted sum of values where weights are softmax(query . key / sqrt(d)). It lets each token use information from other relevant tokens."],
+  ["Why is long context expensive?", "Self-attention compares every token with every other, so compute grows roughly with sequence length squared, and you pay per input token. The KV cache avoids recomputing past tokens during generation."],
+  ["What is hallucination and how do you reduce it?", "Fluent but false output. Reduce it with RAG grounding, instructions to answer only from sources, citation checks, an explicit \"I don't know\" path, low temperature, and evals for faithfulness."],
+  ["What is an embedding?", "A fixed-length vector representation of text where similar meanings are close together. Use the same model for documents and queries."],
+  ["Cosine similarity vs dot product?", "Cosine measures angle and ignores length. For normalised vectors they are identical, so normalise once and use the cheaper dot product."],
+  ["What is a vector database and when do you need one?", "A store with approximate nearest neighbour indexes plus metadata filtering. Postgres + pgvector covers up to a few million vectors; dedicated DBs (Qdrant, Pinecone, Milvus) help at larger scale or with heavy filtered search."],
+  ["HNSW vs IVF?", "HNSW is a layered proximity graph: high recall and speed, more memory, no training. IVF clusters vectors and searches only nearby clusters: less memory, needs training, recall depends on probes."],
+  ["What is RAG?", "Retrieval-Augmented Generation: retrieve relevant chunks from your data and put them in the prompt so the model answers from them, ideally with citations. It adds private and fresh knowledge without training."],
+  ["How do you choose chunk size?", "Start around 300 to 500 tokens with 10 to 20 percent overlap, split on headings/paragraphs, then tune using recall@k on a golden set. Small chunks are precise but lose context; large chunks are blurry and costly."],
+  ["What is hybrid search?", "Running keyword (BM25) and vector search together and merging results, usually with Reciprocal Rank Fusion. Keywords catch exact IDs and names; vectors catch meaning."],
+  ["What is re-ranking?", "A second stage where a cross-encoder scores each (query, candidate) pair together for precise relevance. Run it on the top 20 to 50 candidates and keep the best few."],
+  ["Bi-encoder vs cross-encoder?", "A bi-encoder embeds query and document separately (fast, precomputable, used for retrieval). A cross-encoder reads them together (accurate, slow, used for re-ranking)."],
+  ["How do you evaluate a RAG system?", "Separately: retrieval with recall@k and MRR on labelled queries, generation with faithfulness and correctness (code checks plus a calibrated LLM judge). Online, track feedback, citation clicks and I-don't-know rate."],
+  ["What is LLM-as-judge and its risks?", "Using a strong model to grade outputs against a rubric. Risks: length and position bias, self-preference, inconsistency; calibrate against human labels and use clear binary rubrics."],
+  ["How do you prevent regressions when changing a prompt?", "Keep a versioned golden set, run evals in CI on every prompt/model change, compare to the main baseline, and fail the build if key metrics drop beyond a tolerance."],
+  ["What is prompt injection?", "Untrusted text (user input, documents, web pages) containing instructions the model follows. Indirect injection hides it in retrieved or tool content."],
+  ["How do you defend against prompt injection?", "Layers: instructions in the system prompt, delimit untrusted data, strict output schemas, least-privilege tools, human confirmation for side effects, and never executing model output directly."],
+  ["How do you get reliable structured output?", "Use JSON mode or a response schema, validate with Pydantic (types, enums, ranges, cross-field rules), retry with the validation error fed back (max 2), then fall back safely."],
+  ["What is function calling?", "The model returns a structured request naming a tool and JSON arguments; your code validates and executes it and returns the result to the model."],
+  ["What is an agent?", "An LLM in a loop that chooses tools based on intermediate results until it produces a final answer. It needs step limits, budgets, repeat detection and guardrails."],
+  ["When should you not use an agent?", "When the steps are known in advance. A fixed pipeline is cheaper, faster, more predictable and easier to evaluate."],
+  ["Fine-tuning vs RAG?", "RAG adds knowledge (fresh, private, citable) by retrieval. Fine-tuning changes behaviour (format, style, narrow task skill). Try prompting first, RAG for knowledge, fine-tune for behaviour."],
+  ["What is LoRA?", "Freeze the base weights W and learn a low-rank update B A (rank r), so trainable parameters drop to r x (d + k). Adapters are small and swappable."],
+  ["What is quantization?", "Storing weights in fewer bits (8 or 4 instead of 16), cutting memory roughly 2x to 4x and often speeding inference, with a small accuracy cost you must measure. QLoRA fine-tunes on a 4-bit base."],
+  ["How do you reduce LLM latency?", "Shorter prompts, capped output tokens, smaller models for easy requests, streaming, caching, parallel retrieval steps, and nearby regions. Output length usually matters most."],
+  ["How do you reduce LLM cost?", "Smaller or routed models, trimmed prompts and context, fewer few-shot examples, exact/semantic caching, provider prompt caching for stable prefixes, batch APIs for offline jobs."],
+  ["Exact cache vs semantic cache?", "Exact cache keys on a hash of model, prompt version and normalised input: safe and simple. Semantic cache matches similar queries by embedding: higher hit rate but risks wrong answers, so use a strict threshold."],
+  ["Why stream responses?", "Users see the first tokens after the time to first token instead of waiting for the full answer, which greatly improves perceived latency. Do not stream output that must be validated first."],
+  ["How do you handle rate limits and provider errors?", "Retry 429 and 5xx with exponential backoff plus jitter, honour Retry-After, set timeouts, cap attempts, use circuit breakers and fall back to another model or a non-LLM path."],
+  ["What are guardrails?", "Checks around the model: input filters (injection, abuse, PII), output validation (schema, citations, toxicity, policy), tool permissions and human approval for risky actions."],
+  ["How do you handle PII in LLM apps?", "Minimise what you send, redact PII before logging, restrict and expire raw logs, use providers with no-training and data residency terms, and enforce access control at retrieval."],
+  ["What should you log for LLM observability?", "Trace id, prompt version, model, input/output tokens, cost, TTFT and total latency, cache hits, retries, fallbacks and validation results, with PII redacted."],
+  ["What is batching in LLM serving?", "Grouping requests to use the GPU efficiently. Servers like vLLM use continuous batching; providers offer cheaper async batch APIs for offline jobs. It raises throughput at some cost to per-request latency."],
+  ["What happens when a conversation exceeds the context window?", "You must trim: keep the system prompt and newest turns, summarise or drop older turns, and retrieve relevant past facts instead of sending everything."]
+] };
+window.SD = window.SD || [];
+window.SD.push(
+  ["ai1", "AI design: RAG assistant over company docs", "ingestion + chunking, embeddings, vector store, hybrid retrieval, re-ranking, citations, evals, cost per query, caching"],
+  ["ai2", "AI design: LLM gateway", "multi-provider routing, model aliases, per-team rate limits, exact cache, retries + fallbacks, circuit breakers, streaming, cost tracking"],
+  ["ai3", "AI design: evaluation pipeline for an LLM feature", "golden sets, offline metrics (F1, recall@k, LLM judge), online metrics, regression gating in CI, sampling prod traffic"]
+);
