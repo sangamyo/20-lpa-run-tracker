@@ -1,5 +1,7 @@
 # 20 LPA Run
 
+![Screenshot](docs/screenshot.png)
+
 A personal interview-prep tracker for a structured, week-by-week plan toward a 20 LPA software role. It covers DSA practice, core CS, AI/ML topics, job applications and mock interviews. Everything runs locally, and all data stays in one JSON file on your machine.
 
 ## Features
@@ -42,3 +44,7 @@ python3 -m unittest discover -s tests
 - The server accepts only `127.0.0.1` and `localhost` requests, by design. This is a single-user local tool with no authentication.
 - `data/` (your progress) is gitignored.
 - `seed/` holds the source data (target companies, lesson batches) that the `data-*.js` files were generated from.
+
+## License
+
+[MIT](LICENSE) © Hari Om Kasaundhan
